@@ -1,139 +1,234 @@
 #include <dos.h>
-#include <ctype.h>
 #include <stdio.h>
 #include <conio.h>
-#include <string.h>
-#include <stdlib.h>
+#include <io.h>
+
+void PLAY_SOUND() {
+	
+_asm {
+	mov bx, 0
+	mov ax, 0E07h
+	int 10h
+}
+
+};
+
+unsigned int timerCount = 0;
+
+void interrupt(*timeOld)(...);
+
 
 int milsec = 0;
 
-void interrupt (*oldI70h)(...);
+void interrupt timeNew(...) {
 
-void interrupt newI70h(...){
-	milsec++;
-	outp(0x70,0x0C);
-	inp(0x71);
-	outp(0x20,0x20);
-	outp(0xA0,0x20);
+milsec++;
+outp(0x70, 0x0C);
+inp(0x71);
+//Посылаем контроллерам прерываний сигнал EOI
+outp(0x20, 0x20);
+outp(0xA0, 0x20);
+
 }
 
-void interrupt (*oldI4Ah)(...);
+void interrupt(*oldAlarm) (...);
 
-void interrupt newI4Ah(...){  
+struct VIDEO {
+unsigned char symb;
+unsigned char attr;
+};
+
+const char* alarmClockText[] = { "Wake up!", "Wake up!" };
+const int alarmClockTextSize[] = { 8, 8 };
+
+void interrupt newAlarm(...) {
+
+	clrscr();
+	VIDEO far* screen = (VIDEO far*)MK_FP(0xB800, 0);
+	screen += 30;
+	for (int l = 0; l < 2; l++) {
+		for (int h = 0; h < alarmClockTextSize[l]; h++) {
+			
+			screen->symb = alarmClockText[l][h]; screen->attr = 12; screen++;
+			delay(50);
+		}
+
+	screen += 55;
+	}
+
+}
+
+void reset()
+{
+
+	if (oldAlarm != NULL) {
+
+		setvect(0x4A, oldAlarm);
+		outp(0xA1, (inp(0xA0) | 0x01)); // запретить прерывание часов реального времени
+		outp(0x70, 0x05); //часы будильника
+		outp(0x71, 0x00); //сброс настроек
+		outp(0x70, 0x03); //минуты будильника
+		outp(0x71, 0x00); //сброс настроек
+		outp(0x70, 0x01); //секунды будильника
+		outp(0x71, 0x00); //сброс настроек
+		outp(0x70, 0xB);
+
+		outp(0x71, (inp(0x71) & 0xDF)); // блокировать прерывание
+	}
+}
+
+int bcdToDecimal(int number){
+	return (((number / 16) * 10) + (number % 16));
+}
+
+int decimalToBCD(int number){
+	return ((number / 10 * 16) + (number % 10));
+}
+
+void getTime(){
 	
-	oldI4Ah();  
+//порт 70h задаёт номер регистра, а порт 71h используется для чтения и записи
+//выбрать регистр через порт 70h
+//считать значение
+	outp(0x70, 0x04); //часы
+	printf("%02d:", bcdToDecimal(inp(0x71)));//%02d- вывод целочисленных значений в 2 или более числах, первое =0, если число меньше или равно 9
+	outp(0x70, 0x02); //минуты
+	printf("%02d:", bcdToDecimal(inp(0x71)));
+	outp(0x70, 0x00); //секунды
+	printf("%02d\n", bcdToDecimal(inp(0x71)));
 
-	outp(0x43, 0xB6);
-
-	long unsigned value = 1193180/400;
-	outp(0x42, (unsigned char)value);
-	outp(0x42, (unsigned char)(value >> 8));
-
-	outp(0x61, (inp(0x61)|3));
-	delay(5000);
-	outp(0x61, inp(0x61) & 0xFC);
-
-	outp(0x20,0x20);
 }
 
-unsigned char get_param(int reg)
-{
-	unsigned char result;
-	outp(0x70, reg);	
-	result = inp(0x71);					
-	return result;
+void getTimeAlarm(){
+//порт 70h задаёт номер регистра, а порт 71h используется для чтения и записи
+//выбрать регистр через порт 70h
+//считать значение
+	outp(0x70, 0x05); //часы
+	printf("%02d:", bcdToDecimal(inp(0x71)));//%02d- вывод целочисленных значений в 2 или более числах, первое =0, если число меньше или равно 9
+	outp(0x70, 0x03); //минуты
+	printf("%02d:", bcdToDecimal(inp(0x71)));
+	outp(0x70, 0x01); //секунды
+	printf("%02d\n", bcdToDecimal(inp(0x71)));
+
 }
 
-void wait(){ 
-	do{
-		outp(0x70, 0x0A);
-	}while(inp(0x71) & 0x80 );
+void getDate(){
+//выбрать регистр через порт 70
+//считать значение
+	outp(0x70, 0x07); //день месяца
+	printf("%02d.", bcdToDecimal(inp(0x71)));
+	outp(0x70, 0x08); //месяц
+	printf("%02d.", bcdToDecimal(inp(0x71)));
+	outp(0x70, 0x09); //год 2 младшие цифры
+	printf("%02d\n", bcdToDecimal(inp(0x71)));
+
 }
 
-void disableUpdate(){  
-    wait();
-	outp(0x70, 0x0B);
-	outp(0x71, (inp(0x71) | 0x80));
-	printf("Time update was disabled\n");
+void setTime(int num){
+
+	int hours;
+	rewind(stdin);
+	printf("Hours: ");
+	scanf("%i", &hours);//%i-ожидает на входе строку с с целым числом в 10, 8(начиная с 0) или 16(0х)системах счисления
+	while (hours > 23 || hours < 0) {
+
+		rewind(stdin);
+		printf("Hours: ");
+		scanf("%i", &hours);//%i-ожидает на входе строку с с целым числом в 10, 8(начиная с 0) или 16(0х)системах счисления
+	}	
+
+	hours = decimalToBCD(hours);
+	int minutes;
+	rewind(stdin);
+	printf("Minutes: ");
+	scanf("%i", &minutes);
+
+	while (minutes > 59 || minutes < 0) {
+
+		rewind(stdin);
+		printf("Minutes: ");
+		scanf("%i", &minutes);
+	}
+
+	minutes = decimalToBCD(minutes);
+	int seconds;
+	rewind(stdin);
+	printf("Seconds: ");
+	scanf("%i", &seconds);
+
+	while (seconds > 59 || seconds < 0) {
+
+		rewind(stdin);
+		printf("Seconds: ");
+		scanf("%i", &seconds);
+	}
+
+	seconds = decimalToBCD(seconds);
+	if (num)
+	{
+
+		unsigned int result;
+		//проверяем доступность значений регистров для чтения/записи
+		//ждём, пока старший бит регистра состояния А не станет равным 0
+
+		do {
+
+			outp(0x70, 0x0A);//регистр А задаёт частоту срабатывания прерывания
+			result = (inp(0x71) & 0x80);
+
+		} while (result);
+
+		outp(0x70, 0xB);//регистр В
+		outp(0x71, inp(0x71) | 0x80); // запрет обновления
+		outp(0x70, 0x04);//установить часы
+		outp(0x71, hours);
+		outp(0x70, 0x02);//установить минуты
+		outp(0x71, minutes);
+		outp(0x70, 0x00);//установить секунды
+		outp(0x71, seconds);
+		outp(0x70, 0xB);
+		outp(0x71, inp(0x71) & 0x7F); // разрешено обновление
+
+	} else {
+
+		_disable();
+		outp(0xA1, (inp(0xA1) & 0xFE));
+		unsigned int res;
+
+			do {
+
+				outp(0x70, 0xA);
+				res = inp(0x71) & 0x80;
+
+			} while (res);
+
+			outp(0x70, 0x05);
+			outp(0x71, hours);//установить часы будильника
+			outp(0x70, 0x03);
+			outp(0x71, minutes);//установить минуты будильника
+			outp(0x70, 0x01);
+			outp(0x71, seconds);//установить секунды будильника
+
+			//Разрешаем прерывание будильника установив 1 в 5 бит регистра состояния B
+
+			outp(0x70, 0xB);
+			outp(0x71, (inp(0x71) | 0x20));
+			//Переопределяем вектор прерывания
+
+			oldAlarm = getvect(0x4A);
+			setvect(0x4A, newAlarm);
+			_enable();
+
+	}
 }
 
-void enableUpdate(){  
-	wait();
-    outp(0x70, 0x0B);
-    outp(0x71, (inp(0x71) & 0x7F));
-	printf("Time update was enabled\n");
-}
+void setDelay() {
 
-int inputInt(int min, int max){
-	int number;
-	do{
-		fflush(stdin);
-	}while(!scanf("%d", &number) || number<min || number>max);
-	return number;
-}
-
-int getInt(int BCD){
-	return BCD % 16 + BCD / 16 * 10;
-}
-
-unsigned char getBCDcode(int IntNumber){
-	 return (unsigned char)((IntNumber/10)<<4)|(IntNumber%10);
-}
-
-void set_param(int value,int reg,int min, int max)
-{
-	value = inputInt(min,max);
-	outp(0x70, reg);	
-	outp(0x71, getBCDcode(value));					
-}
-
-void getTotal()
-{
-	char months[13][12] = {{"Unknown"},{"January"},{"February"},{"March"},{"April"},{"May"},{"June"},{"July"},{"August"},{"September"},{"October"},{"November"},{"December"}};
-	char weekdays[8][12] = {"Unknown","Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
-
-
-	unsigned char hour,minute,second,year,month,day,weekday;
-	
-	disableUpdate();
-	printf("The result of data and time:\n");
-	hour = get_param(0x04);							
-	minute = get_param(0x02);						
-	second = get_param(0x00);						
-	year = get_param(0x09);							
-	month = get_param(0x08);						
-	day = get_param(0x07);							
-	weekday = get_param(0x06);						
-	printf("Time:	%d:%d:%d\nData:		%s %d,20%d	-	%s\n", getInt(hour),getInt(minute),getInt(second),months[getInt(month)],getInt(day),getInt(year),weekdays[getInt(weekday)]);
-	enableUpdate();
-}
-
-void setTotal()
-{
-	int value;
-    disableUpdate();
-	printf("\nHour: ");
-	set_param(value,0x04,0,24);
-	printf("\nMinutes: ");
-	set_param(value,0x02,0,60);
-	printf("\nSeconds: ");
-	set_param(value,0x00,0,60);
-	printf("\nDay of week: " );
-	set_param(value,0x06,1,7);
-	printf("\nDay of month: ");
-	set_param(value,0x07,1,31);
-	printf("\nMonth: ");
-	set_param(value,0x08,1,12);
-	enableUpdate();
-    printf("Time is successfully set\n");
-}
-
-void delayTime(){
 	unsigned long delayPeriod;
 	unsigned char value;
 	_disable();
-	oldI70h = getvect(0x70);
-	setvect(0x70, newI70h);
+	timeOld = getvect(0x70);
+	setvect(0x70, timeNew);
 	_enable();
 	printf("\nEnter delay time in milliseconds: ");
 	scanf("%ld", &delayPeriod);
@@ -147,71 +242,74 @@ void delayTime(){
 	milsec = 0;
 	while(milsec!= delayPeriod);
 	printf("\nEnd delay of %d ms\n", milsec);
-	setvect(0x70, oldI70h);
-	enableUpdate();
+	setvect(0x70, timeOld);
+
+
 }
 
-void setAlarm()
-{
-    int value;
-    disableUpdate();     // disable clock update
-    printf("Enter hour: ");
-	value = inputInt(0,24);
-    outp(0x70, 0x05);
-    outp(0x71, getBCDcode(value));
-    printf("Enter minute: ");
-    value = inputInt(0,60);
-    outp(0x70, 0x03);
-    outp(0x71, getBCDcode(value));
-    printf("Enter second: ");
-    value = inputInt(0,60);
-    outp(0x70, 0x01);
-    outp(0x71, getBCDcode(value));
-	outp(0x70, 0x0B);
-	outp(0x71, (inp(0x71)| 0x20));
-    enableUpdate(); // enable clock update
-    printf("Alarm is set\n");
-}
+char check() {
 
-void viewAlarm()
-{
-    unsigned char value;
-    disableUpdate();     // disable clock update
+	int choice = 0;
+	int res = scanf("%d", &choice);
+	rewind(stdin);
 
-    outp(0x70, 0x05);
-    value = inp(0x71);
-	printf("Alarm - %d:", getInt(value));
+	while (res < 1 || choice < 0 || choice > 3) {
 
-    outp(0x70, 0x03);
-    value = inp(0x71);
-	printf("%d:", getInt(value));
+		printf("repeat input\n");
+		rewind(stdin);
+		res = scanf("%d", &choice);
 
-    outp(0x70, 0x01);
-    value = inp(0x71);
-	printf("%d\n", getInt(value));
-    enableUpdate(); // enable clock update
+	}
+
+	return (char)choice + '0';
 }
 
 int main()
 {
-	char choose, value;
-    oldI4Ah = getvect(0x4A);
-    setvect(0x4A, newI4Ah);
-    while(choose != '0'){
-    clrscr();
-    printf("\n1)Time info\n2)Set time\n3)Set alarm time\n4)Delay time(alarm clocks set)");
-    printf("\n5)Show alarm clocks\n0)Leave away\n");
-	choose = getch();
-		switch(choose){
-			case '1': getTotal(); break;
-			case '2': setTotal(); break;
-			case '3': delayTime(); break;
-			case '4': setAlarm(); break;
-			case '5': viewAlarm(); break;
-			case '0': break;
-		}
-		getch();
-    }
-	setvect(0x4A, oldI4Ah);
-	return 0;
+
+	printf("1.Set and get time\n");
+	printf("2.Sleep function\n");
+	printf("3.Set alarm\n");	
+	printf("0.Exit\n");
+	printf("Input, please\n");
+
+	char choice = check();
+
+	while (choice != '0') {
+
+	switch (choice)
+	{
+
+		case'1':
+		printf("Current date: ");
+		getDate();
+		printf("Current time: ");
+		getTime();
+		printf("Set time: ");
+		setTime(1);
+		printf("Current date: ");
+		getDate();
+		printf("Current time: ");
+		getTime();
+		printf("Set time: "); break;
+
+	case'2':
+		setDelay();
+		break;
+
+	case'3':
+		setTime(0);
+		getTimeAlarm();
+		break;
+
+	case'0': reset(); return 1;
+
+	}
+
+		printf("if you want exit, input 0\n");
+		choice = check();
+
+	}
+return 0;
+
 }
